@@ -73,7 +73,14 @@ class CDCManager:
         try:
             with open(config_path, "r") as f:
                 config = json.load(f)
+            return self.create_connector_from_config(config)
+        except Exception as e:
+            logger.error("Failed to create connector", config_path=config_path, error=str(e))
+            raise
 
+    def create_connector_from_config(self, config: Dict) -> bool:
+        """Create a new Debezium connector from config dict."""
+        try:
             connector_name = config.get("name")
             if not connector_name:
                 raise ValueError("Connector config must include 'name' field")
@@ -93,6 +100,13 @@ class CDCManager:
                 timeout=30,
             )
             response.raise_for_status()
+
+            logger.info("Connector created successfully", connector=connector_name)
+            return True
+
+        except Exception as e:
+            logger.error("Failed to create connector", config=config, error=str(e))
+            return False
 
             result = response.json()
             logger.info(

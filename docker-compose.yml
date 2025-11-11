@@ -88,7 +88,10 @@ services:
       CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
       CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
     volumes:
-      - ./config/debezium:/kafka/config
+      - ./data/kafka-connect/config:/kafka/config
+      - ./data/kafka-connect/data:/kafka/data
+      - ./data/kafka-connect/logs:/kafka/logs
+    user: "1001:1001"
 
   # Spark Master
   spark-master:
