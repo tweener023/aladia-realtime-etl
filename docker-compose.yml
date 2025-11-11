@@ -1,0 +1,184 @@
+version: '3.8'
+
+services:
+  # Zookeeper for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - ./data/zookeeper/data:/var/lib/zookeeper/data
+      - ./data/zookeeper/logs:/var/lib/zookeeper/log
+
+  # Kafka Message Broker
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    volumes:
+      - ./data/kafka/data:/var/lib/kafka/data
+
+  # Source PostgreSQL Database
+  source-db:
+    image: postgres:15-alpine
+    hostname: source-db
+    container_name: source-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: sourcedb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./data/source-db:/var/lib/postgresql/data
+      - ./src/source_db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    command: postgres -c wal_level=logical -c max_replication_slots=4 -c max_wal_senders=4
+
+  # Data Warehouse PostgreSQL Database
+  warehouse-db:
+    image: postgres:15-alpine
+    hostname: warehouse-db
+    container_name: warehouse-db
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: warehouse
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./data/warehouse-db:/var/lib/postgresql/data
+      - ./src/warehouse/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+
+  # Kafka Connect with Debezium
+  kafka-connect:
+    image: debezium/connect:2.4
+    hostname: kafka-connect
+    container_name: kafka-connect
+    depends_on:
+      - kafka
+      - source-db
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: my_connect_configs
+      OFFSET_STORAGE_TOPIC: my_connect_offsets
+      STATUS_STORAGE_TOPIC: my_connect_statuses
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    volumes:
+      - ./config/debezium:/kafka/config
+
+  # Spark Master
+  spark-master:
+    image: apache/spark:3.5.0-python3
+    hostname: spark-master
+    container_name: spark-master
+    ports:
+      - "8080:8080"  # Spark Master Web UI
+      - "7077:7077"  # Spark Master Port
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    command: >
+      bash -c "
+        /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      "
+    volumes:
+      - ./src:/app
+      - ./data/spark:/tmp/spark-events
+
+  # Spark Worker
+  spark-worker:
+    image: apache/spark:3.5.0-python3
+    hostname: spark-worker
+    container_name: spark-worker
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"  # Spark Worker Web UI
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=1
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    command: >
+      bash -c "
+        /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+      "
+    volumes:
+      - ./src:/app
+      - ./data/spark:/tmp/spark-events
+
+  # ETL Application Container (for running Python components)
+  etl-app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.etl
+    hostname: etl-app
+    container_name: etl-app
+    depends_on:
+      - kafka
+      - source-db
+      - warehouse-db
+      - spark-master
+    environment:
+      SOURCE_DB_HOST: source-db
+      SOURCE_DB_PORT: 5432
+      WAREHOUSE_DB_HOST: warehouse-db
+      WAREHOUSE_DB_PORT: 5432
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SPARK_MASTER: spark://spark-master:7077
+      DEBEZIUM_CONNECT_URL: http://kafka-connect:8083
+      LOG_LEVEL: INFO
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./data:/app/data
+    working_dir: /app
+    command: >
+      bash -c "
+        echo 'ETL Application container started. Use docker exec to run commands.'
+        tail -f /dev/null
+      "
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  zookeeper-data:
+  kafka-data:
+  source-db-data:
+  warehouse-db-data:
+  spark-data:
