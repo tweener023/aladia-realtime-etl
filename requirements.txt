@@ -29,3 +29,11 @@ mypy==1.7.1
 
 # Monitoring and logging
 structlog==23.2.0
+
+# Analytics and visualization
+pandas==2.1.4
+numpy==1.25.2
+matplotlib==3.8.2
+seaborn==0.13.0
+jupyter==1.0.0
+ipykernel==6.27.1
